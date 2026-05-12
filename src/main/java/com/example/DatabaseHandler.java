@@ -4,19 +4,47 @@ import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * DatabaseHandler — Database pillar (JDBC).
+ *
+ * Demonstrates:
+ *   - DriverManager.getConnection()  to open a SQLite connection
+ *   - Statement                      for simple queries (CREATE, SELECT *)
+ *   - PreparedStatement              for parameterised queries (INSERT, UPDATE, DELETE)
+ *   - ResultSet + rs.next()          to iterate query results
+ *   - try-with-resources             to auto-close Connection/Statement/ResultSet
+ *   - StoreException (checked)       wraps every SQLException so callers must handle it
+ *   - synchronized(lock)             protects write operations (Threads slides 103-105)
+ */
 public class DatabaseHandler {
 
     private final String dbUrl;
-    // Ad-hoc lock object — Bank example pattern from Threads slides (slides 103-105)
+
+    // Ad-hoc lock object — same "Bank" pattern from Threads slides 103-105.
+    // Using a plain Object instead of synchronizing the whole method keeps only
+    // the critical section locked, allowing reads to proceed concurrently.
     private final Object lock = new Object();
 
+    // Default constructor uses a file-based SQLite database
     public DatabaseHandler() { this.dbUrl = "jdbc:sqlite:store.db"; }
+
+    // Package-private constructor lets unit tests inject a temp-file URL
     DatabaseHandler(String dbUrl) { this.dbUrl = dbUrl; }
 
+    // Opens a new connection each call — SQLite handles this efficiently
     private Connection getConnection() throws SQLException {
         return DriverManager.getConnection(dbUrl);
     }
 
+    // -------------------------------------------------------------------------
+    // Schema setup — called once at startup
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates the products table if it does not already exist.
+     * Uses Statement (no parameters needed for DDL).
+     * Throws StoreException so main() can abort if the DB cannot be initialised.
+     */
     public void setupDatabase() throws StoreException {
         String sql = "CREATE TABLE IF NOT EXISTS products (" +
             "id INTEGER PRIMARY KEY AUTOINCREMENT, " +
@@ -30,19 +58,24 @@ public class DatabaseHandler {
         }
     }
 
-    // Write operations use synchronized(lock) so the main thread cannot
-    // modify products concurrently with any background thread.
+    // -------------------------------------------------------------------------
+    // CRUD — Create
+    // -------------------------------------------------------------------------
 
+    /**
+     * Inserts a new product using PreparedStatement with ? placeholders.
+     * synchronized(lock) prevents concurrent inserts from interleaving.
+     */
     public void addProduct(String name, String category, double price, int qty)
             throws StoreException {
         String sql = "INSERT INTO products(name,category,price,quantity) VALUES(?,?,?,?)";
         synchronized (lock) {
             try (Connection conn = getConnection();
                  PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setString(1, name);
-                ps.setString(2, category);
-                ps.setDouble(3, price);
-                ps.setInt(4, qty);
+                ps.setString(1, name);      // bind parameter 1
+                ps.setString(2, category);  // bind parameter 2
+                ps.setDouble(3, price);     // bind parameter 3
+                ps.setInt(4, qty);          // bind parameter 4
                 ps.executeUpdate();
                 System.out.println("[DB] Added: " + name);
             } catch (SQLException e) {
@@ -51,6 +84,14 @@ public class DatabaseHandler {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // CRUD — Read
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns all products ordered by name.
+     * Uses Statement (no parameters) and iterates the ResultSet with rs.next().
+     */
     public List<String[]> getAllProducts() throws StoreException {
         List<String[]> list = new ArrayList<>();
         String sql = "SELECT id,name,category,price,quantity FROM products ORDER BY name";
@@ -69,6 +110,11 @@ public class DatabaseHandler {
         return list;
     }
 
+    /**
+     * Finds a single product by its primary key.
+     * Uses PreparedStatement with a WHERE id=? clause.
+     * Returns null if no row is found.
+     */
     public String[] getProductById(int id) throws StoreException {
         String sql = "SELECT id,name,category,price,quantity FROM products WHERE id=?";
         try (Connection conn = getConnection();
@@ -87,6 +133,14 @@ public class DatabaseHandler {
         return null;
     }
 
+    // -------------------------------------------------------------------------
+    // CRUD — Update
+    // -------------------------------------------------------------------------
+
+    /**
+     * Updates all fields of an existing product.
+     * synchronized(lock) ensures no other write can interleave mid-update.
+     */
     public void updateProduct(int id, String name, String category, double price, int qty)
             throws StoreException {
         String sql = "UPDATE products SET name=?,category=?,price=?,quantity=? WHERE id=?";
@@ -103,6 +157,14 @@ public class DatabaseHandler {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // CRUD — Delete
+    // -------------------------------------------------------------------------
+
+    /**
+     * Removes a product by its primary key.
+     * synchronized(lock) prevents a concurrent read from seeing a half-deleted row.
+     */
     public void deleteProduct(int id) throws StoreException {
         synchronized (lock) {
             try (Connection conn = getConnection();
@@ -117,6 +179,11 @@ public class DatabaseHandler {
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Display helper
+    // -------------------------------------------------------------------------
+
+    /** Prints a formatted product table to stdout. Catches StoreException internally. */
     public void showProducts() {
         try {
             List<String[]> list = getAllProducts();
